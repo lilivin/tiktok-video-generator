@@ -1,10 +1,10 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import HelloWorld from '../components/HelloWorld';
+import QuizForm from '../components/QuizForm';
 ---
 
 <Layout title="TikTok Video Generator">
-  <main class="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
-    <HelloWorld client:load />
+  <main class="min-h-screen bg-background">
+    <QuizForm client:load />
   </main>
 </Layout> 

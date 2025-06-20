@@ -51,7 +51,7 @@ Twórcy spędzają zbyt dużo czasu i/lub pieniędzy na ręczny montaż krótkic
 
 | ID    | Tytuł                    | Opis                                                                                                         | Kryteria akceptacji |
 |-------|--------------------------|--------------------------------------------------------------------------------------------------------------|---------------------|
-| US-001 | Utwórz quiz             | Jako content creator chcę wprowadzić 3-5 pytań i odpowiedzi, by przygotować quiz.                           | • Formularz blokuje <3 lub >5 pytań.<br>• Puste pola powodują komunikat błędu.<br>• Każde pytanie ≤ 120 zn. |
+| US-001 | Utwórz quiz             | Jako content creator chcę wprowadzić 3-5 pytań i jedną poprawną dpowiedzi dla kazdego, by przygotować quiz.                           | • Formularz blokuje <3 lub >5 pytań.<br>• Puste pola powodują komunikat błędu.<br>• Każde pytanie ≤ 120 zn. |
 | US-002 | Dodaj obraz             | Jako content creator chcę dodać własny obraz do pytania.                                                     | • Po wgraniu JPG/PNG ≤ 5 MB pokazywana jest miniatura.<br>• Nieobsługiwany format zwraca błąd. |
 | US-003 | Generuj wideo           | Jako content creator chcę jednym kliknięciem wygenerować film.                                              | • Spinner startuje ≤ 1 s po kliknięciu.<br>• 95 % generacji kończy się sukcesem < 30 s.<br>• W razie błędu pojawia się komunikat z opcją ponów. |
 | US-004 | Edytuj wideo            | Jako content creator chcę poprawić tekst lub muzykę bez ponownego renderu.                                  | • Edytor otwiera się po sukcesie renderu.<br>• Zmiany widoczne w podglądzie ≤ 200 ms.<br>• Pobierany plik zawiera poprawki. |
