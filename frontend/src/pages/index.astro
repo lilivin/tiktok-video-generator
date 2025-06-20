@@ -1,0 +1,10 @@
+---
+import Layout from '../layouts/Layout.astro';
+import HelloWorld from '../components/HelloWorld';
+---
+
+<Layout title="TikTok Video Generator">
+  <main class="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+    <HelloWorld client:load />
+  </main>
+</Layout> 
