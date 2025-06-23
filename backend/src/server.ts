@@ -1,7 +1,12 @@
+import dotenv from 'dotenv'
+import path from 'path';
+
+// Load .env from parent directory (project root)
+dotenv.config({ path: path.join(process.cwd(), '..', '.env') })
+
 import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
-import path from 'path';
 import type { VideoGenerationRequest, VideoGenerationJob } from './types/video.js';
 import { addVideoGenerationJob, getJobStatus } from './services/queue.js';
 

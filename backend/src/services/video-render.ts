@@ -4,6 +4,8 @@ import { fileURLToPath } from 'url'
 import { spawn } from 'child_process'
 import pino from 'pino'
 import { QuizQuestion, VideoRenderOptions, DEFAULT_RENDER_OPTIONS } from '../types/video.js'
+import { PromptGeneratorService } from './prompt-generator.js'
+import { AIImageService, AIImageOptions } from './ai-image.js'
 
 const logger = pino({ name: 'video-render-service' })
 const __filename = fileURLToPath(import.meta.url)
@@ -12,10 +14,14 @@ const __dirname = path.dirname(__filename)
 export class VideoRenderService {
   private readonly outputDir: string
   private readonly tempDir: string
+  private readonly promptGenerator: PromptGeneratorService
+  private readonly aiImageService: AIImageService
 
   constructor() {
     this.outputDir = path.join(process.cwd(), 'outputs')
     this.tempDir = path.join(process.cwd(), 'temp')
+    this.promptGenerator = new PromptGeneratorService()
+    this.aiImageService = new AIImageService()
     this.ensureDirectories()
   }
 
@@ -28,6 +34,10 @@ export class VideoRenderService {
     logger.info('Generating AI backgrounds for questions')
     
     const backgrounds: string[] = []
+    const isAIEnabled = process.env.AI_IMAGE_ENABLED === 'true'
+    const aiAvailable = this.aiImageService.isAvailable()
+    
+    logger.info(`AI Image Generation - Enabled: ${isAIEnabled}, Available: ${aiAvailable}`)
     
     for (let i = 0; i < questions.length; i++) {
       try {
@@ -45,9 +55,15 @@ export class VideoRenderService {
             // URL image
             backgrounds.push(question.image)
           }
-        } else {
-          // Generuj tło przez Replicate (jeśli jest API key) lub użyj fallback
+        } else if (isAIEnabled && aiAvailable) {
+          // Generuj tło przez AI
+          logger.info(`Generating AI background for question ${i}`)
           const backgroundPath = await this.generateAIBackground(question.question, i)
+          backgrounds.push(backgroundPath)
+        } else {
+          // Fallback - gradient tło
+          logger.info(`Using fallback background for question ${i}`)
+          const backgroundPath = await this.createFallbackBackground(i)
           backgrounds.push(backgroundPath)
         }
       } catch (error) {
@@ -61,24 +77,73 @@ export class VideoRenderService {
   }
 
   private async generateAIBackground(questionText: string, index: number): Promise<string> {
-    // Sprawdź czy jest klucz API do Replicate
-    const replicateToken = process.env.REPLICATE_API_TOKEN
-    
-    if (!replicateToken) {
-      logger.info(`No Replicate API key, using fallback background for question ${index}`)
-      return this.createFallbackBackground(index)
-    }
-
     try {
-      // Tutaj będzie implementacja Replicate API
-      logger.info(`Generating AI background for question ${index}: "${questionText}"`)
+      logger.info(`Starting AI background generation for question ${index}: "${questionText.substring(0, 50)}..."`)
       
-      // Na razie fallback - w następnym kroku dodamy prawdziwe AI
-      return this.createFallbackBackground(index)
+      // Analizuj pytanie i wygeneruj kontekst
+      const context = this.promptGenerator.analyzeQuestion(questionText)
+      logger.info(`Question analysis complete - Category: ${context.category}, Style: ${context.style}`)
+      
+      // Wygeneruj prompt dla AI
+      const prompt = this.promptGenerator.generatePrompt(context, questionText)
+      logger.info(`Generated AI prompt: "${prompt.substring(0, 100)}..."`)
+      
+      // Przygotuj opcje dla AI
+      const aiOptions: AIImageOptions = {
+        prompt,
+        size: '1024x1792', // Vertical for TikTok
+        quality: (process.env.AI_IMAGE_QUALITY as 'standard' | 'hd') || 'standard',
+        style: context.style === 'dramatic' ? 'vivid' : 'natural',
+        provider: (process.env.AI_IMAGE_PROVIDER as 'openai' | 'replicate') || undefined
+      }
+      
+      // Wygeneruj obraz
+      const result = await this.aiImageService.generateImage(aiOptions)
+      
+      logger.info(`AI background generated successfully for question ${index} using ${result.provider}`)
+      
+      // Opcjonalnie skaluj obraz do odpowiedniego rozmiaru
+      const scaledImagePath = await this.scaleImageIfNeeded(result.imagePath, index)
+      
+      return scaledImagePath
       
     } catch (error) {
-      logger.warn({ error }, 'Failed to generate AI background, using fallback')
-      return this.createFallbackBackground(index)
+      logger.error({ error, questionIndex: index }, 'AI background generation failed')
+      throw error
+    }
+  }
+
+  private async scaleImageIfNeeded(imagePath: string, index: number): Promise<string> {
+    try {
+      // Sprawdź wymiary obrazu i przeskaluj jeśli potrzeba
+      const scaledPath = path.join(this.tempDir, `ai_background_scaled_${index}.png`)
+      
+      // Używamy FFmpeg do skalowania obrazu do 1080x1920
+      await new Promise<void>((resolve, reject) => {
+        const ffmpeg = spawn('ffmpeg', [
+          '-i', imagePath,
+          '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black',
+          '-y',
+          scaledPath
+        ])
+
+        ffmpeg.on('close', (code) => {
+          if (code === 0) {
+            resolve()
+          } else {
+            reject(new Error(`FFmpeg scaling failed with code ${code}`))
+          }
+        })
+
+        ffmpeg.on('error', reject)
+      })
+      
+      logger.info(`Image scaled successfully: ${scaledPath}`)
+      return scaledPath
+      
+    } catch (error) {
+      logger.warn({ error }, 'Image scaling failed, using original')
+      return imagePath
     }
   }
 
