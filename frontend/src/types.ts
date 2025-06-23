@@ -49,4 +49,30 @@ export const QuizFormSchema = z.object({
 
 // Typy TypeScript
 export type QuizQuestion = z.infer<typeof QuizQuestionSchema>
-export type QuizFormData = z.infer<typeof QuizFormSchema> 
+export type QuizFormData = z.infer<typeof QuizFormSchema>
+
+// Typy dla generowania wideo
+export interface VideoGenerationRequest {
+  title: string
+  questions: QuizQuestion[]
+}
+
+export interface VideoGenerationResponse {
+  jobId: string
+  message: string
+}
+
+export interface VideoGenerationStatus {
+  jobId: string
+  status: 'waiting' | 'processing' | 'completed' | 'failed'
+  progress: number
+  message?: string
+  videoUrl?: string
+  error?: string
+}
+
+export interface VideoGenerationError {
+  message: string
+  code: string
+  retryable: boolean
+} 

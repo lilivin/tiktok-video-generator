@@ -7,6 +7,9 @@
     "backend",
     "frontend"
   ],
+  "overrides": {
+    "fastify-plugin": "^4.5.1"
+  },
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "npm run dev --workspace=backend",
@@ -20,5 +23,14 @@
   "engines": {
     "node": ">=20.0.0",
     "npm": ">=10.0.0"
+  },
+  "dependencies": {
+    "ajv-formats": "^3.0.1",
+    "fast-content-type-parse": "^3.0.0",
+    "fast-querystring": "^1.1.2",
+    "fast-uri": "^3.0.6",
+    "helmet": "^8.1.0",
+    "proxy-addr": "^2.0.7",
+    "rfdc": "^1.4.1"
   }
-} 
+}

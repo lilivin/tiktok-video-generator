@@ -1,10 +1,8 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import QuizForm from '../components/QuizForm';
+import VideoGenerator from '../components/VideoGenerator';
 ---
 
 <Layout title="TikTok Video Generator">
-  <main class="min-h-screen bg-background">
-    <QuizForm client:load />
-  </main>
+  <VideoGenerator client:load />
 </Layout> 
