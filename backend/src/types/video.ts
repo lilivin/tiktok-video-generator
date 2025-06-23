@@ -7,6 +7,17 @@ export interface QuizQuestion {
 export interface VideoGenerationRequest {
   title: string
   questions: QuizQuestion[]
+  enableVoice?: boolean // Nowa opcja dla głosu
+  voiceSettings?: VoiceGenerationOptions // Ustawienia głosu
+}
+
+export interface VoiceGenerationOptions {
+  voiceId?: string
+  stability?: number
+  similarityBoost?: number
+  style?: number
+  useSpeakerBoost?: boolean
+  language?: 'pl' | 'en'
 }
 
 export interface VideoGenerationJob {
@@ -20,6 +31,8 @@ export interface VideoGenerationJob {
   error?: string
   createdAt: Date
   updatedAt: Date
+  enableVoice?: boolean // Dodane dla voice
+  voiceSettings?: VoiceGenerationOptions // Dodane dla voice
 }
 
 export interface VideoRenderOptions {
@@ -30,6 +43,7 @@ export interface VideoRenderOptions {
   backgroundMusic?: string
   voiceover?: boolean
   language?: 'pl' | 'en'
+  voiceSettings?: VoiceGenerationOptions // Dodane dla voice
 }
 
 export const DEFAULT_RENDER_OPTIONS: VideoRenderOptions = {

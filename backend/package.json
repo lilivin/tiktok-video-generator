@@ -10,6 +10,7 @@
     "start": "node dist/server.js",
     "test": "vitest",
     "test:ai": "tsx src/test-ai-backgrounds.ts",
+    "test:voice": "tsx src/test-voice.ts",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src"
   },

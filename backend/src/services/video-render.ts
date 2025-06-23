@@ -6,6 +6,7 @@ import pino from 'pino'
 import { QuizQuestion, VideoRenderOptions, DEFAULT_RENDER_OPTIONS } from '../types/video.js'
 import { PromptGeneratorService } from './prompt-generator.js'
 import { AIImageService, AIImageOptions } from './ai-image.js'
+import { VoiceService } from './voice.js'
 
 const logger = pino({ name: 'video-render-service' })
 const __filename = fileURLToPath(import.meta.url)
@@ -16,12 +17,14 @@ export class VideoRenderService {
   private readonly tempDir: string
   private readonly promptGenerator: PromptGeneratorService
   private readonly aiImageService: AIImageService
+  private readonly voiceService: VoiceService
 
   constructor() {
     this.outputDir = path.join(process.cwd(), 'outputs')
     this.tempDir = path.join(process.cwd(), 'temp')
     this.promptGenerator = new PromptGeneratorService()
     this.aiImageService = new AIImageService()
+    this.voiceService = new VoiceService()
     this.ensureDirectories()
   }
 
@@ -288,17 +291,28 @@ export class VideoRenderService {
     logger.info('Generating voiceover for questions')
     
     const audioFiles: string[] = []
+    const isVoiceEnabled = process.env.VOICE_ENABLED === 'true'
+    const voiceAvailable = this.voiceService.isAvailable()
+    
+    logger.info(`Voice Generation - Enabled: ${isVoiceEnabled}, Available: ${voiceAvailable}`)
     
     for (let i = 0; i < questions.length; i++) {
       try {
         const question = questions[i]
         const text = `${question.question}. Odpowiedź: ${question.answer}`
         
-        // Generuj TTS jeśli jest klucz API, inaczej cisza
-        const audioPath = await this.generateTTS(text, i)
-        audioFiles.push(audioPath)
+        if (isVoiceEnabled && voiceAvailable) {
+          // Generuj głos używając VoiceService
+          logger.info(`Generating voice for question ${i}`)
+          const audioPath = await this.generateVoiceAudio(text, i)
+          audioFiles.push(audioPath)
+        } else {
+          // Fallback - cisza
+          logger.info(`Using silence for question ${i}`)
+          audioFiles.push(await this.createSilenceAudio(i))
+        }
       } catch (error) {
-        logger.warn({ error, questionIndex: i }, 'Failed to generate TTS, using silence')
+        logger.warn({ error, questionIndex: i }, 'Failed to generate voice, using silence')
         // Fallback - cisza
         audioFiles.push(await this.createSilenceAudio(i))
       }
@@ -307,7 +321,30 @@ export class VideoRenderService {
     return audioFiles
   }
 
+  private async generateVoiceAudio(text: string, index: number): Promise<string> {
+    try {
+      logger.info(`Generating voice audio for question ${index}: "${text.substring(0, 50)}..."`)
+      
+      const result = await this.voiceService.generateVoice({
+        text,
+        voiceId: process.env.ELEVENLABS_DEFAULT_VOICE,
+        stability: parseFloat(process.env.ELEVENLABS_STABILITY || '0.5'),
+        similarityBoost: parseFloat(process.env.ELEVENLABS_SIMILARITY_BOOST || '0.75'),
+        style: parseFloat(process.env.ELEVENLABS_STYLE || '0.0'),
+        useSpeakerBoost: process.env.ELEVENLABS_USE_SPEAKER_BOOST !== 'false'
+      })
+      
+      logger.info(`Voice audio generated successfully for question ${index}`)
+      return result.audioPath
+      
+    } catch (error) {
+      logger.error({ error, questionIndex: index }, 'Voice generation failed')
+      throw error
+    }
+  }
+
   private async generateTTS(text: string, index: number): Promise<string> {
+    // Stara metoda - będzie używać nowej generateVoiceAudio
     const elevenlabsKey = process.env.ELEVENLABS_API_KEY
     
     if (!elevenlabsKey) {
@@ -316,12 +353,7 @@ export class VideoRenderService {
     }
 
     try {
-      // Tutaj będzie implementacja ElevenLabs TTS
-      logger.info(`Generating TTS for question ${index}: "${text.substring(0, 50)}..."`)
-      
-      // Na razie fallback - w następnym kroku dodamy prawdziwe TTS
-      return this.createSilenceAudio(index)
-      
+      return await this.generateVoiceAudio(text, index)
     } catch (error) {
       logger.warn({ error }, 'Failed to generate TTS, using silence')
       return this.createSilenceAudio(index)

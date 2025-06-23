@@ -9,6 +9,7 @@ import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import type { VideoGenerationRequest, VideoGenerationJob } from './types/video.js';
 import { addVideoGenerationJob, getJobStatus } from './services/queue.js';
+import { VoiceService } from './services/voice.js';
 
 const fastify = Fastify({
   logger: {
@@ -18,6 +19,9 @@ const fastify = Fastify({
     },
   },
 });
+
+// Initialize Voice Service
+const voiceService = new VoiceService();
 
 // Rejestracja pluginów
 await fastify.register(import('@fastify/helmet'));
@@ -177,6 +181,136 @@ fastify.get('/api/video/download/:jobId/:filename', async (request: FastifyReque
     return reply.status(500).send({ 
       error: 'Internal server error',
       message: 'Nie udało się pobrać pliku wideo' 
+    });
+  }
+});
+
+// Voice endpoints
+
+// Get available voices
+fastify.get('/api/voice/voices', async (request: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const isAvailable = voiceService.isAvailable();
+    
+    if (!isAvailable) {
+      return reply.status(503).send({
+        error: 'Voice service unavailable',
+        message: 'ElevenLabs API key not configured'
+      });
+    }
+
+    const voices = voiceService.getAvailableVoices();
+    
+    return reply.send({
+      available: true,
+      count: voices.length,
+      voices: voices.map(voice => ({
+        id: voice.voice_id,
+        name: voice.name,
+        category: voice.category,
+        description: voice.description,
+        accent: voice.labels?.accent,
+        age: voice.labels?.age,
+        gender: voice.labels?.gender
+      }))
+    });
+
+  } catch (error) {
+    fastify.log.error({ error }, 'Failed to get available voices');
+    
+    return reply.status(500).send({
+      error: 'Internal server error',
+      message: 'Nie udało się pobrać dostępnych głosów'
+    });
+  }
+});
+
+// Test voice generation
+fastify.post('/api/voice/test', async (request: FastifyRequest<{
+  Body: {
+    text: string;
+    voiceId?: string;
+    stability?: number;
+    similarityBoost?: number;
+    style?: number;
+    useSpeakerBoost?: boolean;
+  }
+}>, reply: FastifyReply) => {
+  try {
+    const { text, voiceId, stability, similarityBoost, style, useSpeakerBoost } = request.body;
+
+    if (!text || text.length === 0) {
+      return reply.status(400).send({
+        error: 'Invalid input',
+        message: 'Tekst jest wymagany'
+      });
+    }
+
+    if (text.length > 500) {
+      return reply.status(400).send({
+        error: 'Text too long',
+        message: 'Tekst nie może przekraczać 500 znaków'
+      });
+    }
+
+    const isAvailable = voiceService.isAvailable();
+    
+    if (!isAvailable) {
+      return reply.status(503).send({
+        error: 'Voice service unavailable',
+        message: 'ElevenLabs API key not configured'
+      });
+    }
+
+    const result = await voiceService.generateVoice({
+      text,
+      voiceId,
+      stability,
+      similarityBoost,
+      style,
+      useSpeakerBoost
+    });
+
+    // Return audio file path (for testing)
+    const stats = await fs.stat(result.audioPath);
+    
+    return reply.send({
+      success: true,
+      audioPath: result.audioPath,
+      fileSize: stats.size,
+      provider: result.provider,
+      metadata: result.metadata
+    });
+
+  } catch (error) {
+    fastify.log.error({ error }, 'Failed to generate test voice');
+    
+    return reply.status(500).send({
+      error: 'Voice generation failed',
+      message: 'Nie udało się wygenerować głosu'
+    });
+  }
+});
+
+// Voice status endpoint
+fastify.get('/api/voice/status', async (request: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const isAvailable = voiceService.isAvailable();
+    const voices = voiceService.getAvailableVoices();
+    
+    return reply.send({
+      available: isAvailable,
+      voiceCount: voices.length,
+      cacheEnabled: process.env.VOICE_CACHE_ENABLED === 'true',
+      defaultVoice: process.env.ELEVENLABS_DEFAULT_VOICE || 'pNInz6obpgDQGcFmaJgB'
+    });
+
+  } catch (error) {
+    fastify.log.error({ error }, 'Failed to get voice status');
+    
+    return reply.status(500).send({
+      error: 'Internal server error',
+      message: 'Nie udało się pobrać statusu głosu'
     });
   }
 });
