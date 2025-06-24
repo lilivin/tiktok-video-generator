@@ -77,8 +77,8 @@ async function testVoiceService() {
     logger.error({ error }, '❌ Failed to generate voice for quiz question')
   }
 
-  // Test 5: Generate voice for multiple questions (cache test)
-  logger.info('Test 5: Testing cache with multiple questions')
+  // Test 5: Generate voice for multiple questions (cache test) - UPDATED
+  logger.info('Test 5: Testing new question/answer audio generation with timing')
   try {
     const questions = [
       { question: "Ile wynosi 2 + 2?", answer: "4" },
@@ -86,21 +86,51 @@ async function testVoiceService() {
       { question: "Co to jest HTML?", answer: "Język znaczników" }
     ]
     
-    const audioFiles = await voiceService.generateQuizAudio(questions)
+    const audioResults = await voiceService.generateQuizAudio(questions)
     
-    logger.info(`✅ Generated ${audioFiles.length} audio files for quiz`)
+    logger.info(`✅ Generated ${audioResults.length} audio result pairs for quiz`)
     
-    for (let i = 0; i < audioFiles.length; i++) {
-      const stats = await fs.stat(audioFiles[i])
-      logger.info(`Question ${i + 1}: ${audioFiles[i]} (${stats.size} bytes)`)
+    for (let i = 0; i < audioResults.length; i++) {
+      const result = audioResults[i]
+      const questionStats = await fs.stat(result.questionAudio)
+      const answerStats = await fs.stat(result.answerAudio)
+      
+      logger.info(`Question ${i + 1}:`)
+      logger.info(`  - Question audio: ${result.questionAudio} (${questionStats.size} bytes)`)  
+      logger.info(`  - Answer audio: ${result.answerAudio} (${answerStats.size} bytes)`)
     }
     
   } catch (error) {
-    logger.error({ error }, '❌ Failed to generate quiz audio')
+    logger.error({ error }, '❌ Failed to generate new quiz audio system')
   }
 
-  // Test 6: Cache test (regenerate same text)
-  logger.info('Test 6: Testing cache (regenerating same text)')
+  // Test 6: Test individual question/answer generation
+  logger.info('Test 6: Testing individual question/answer audio generation')
+  try {
+    const singleResult = await voiceService.generateQuestionAnswerAudio({
+      question: "Jak nazywa się największa planeta Układu Słonecznego?",
+      answer: "Jowisz",
+      index: 0
+    })
+    
+    logger.info(`✅ Individual question/answer audio generated`)
+    logger.info(`Question audio: ${singleResult.questionAudio}`)
+    logger.info(`Answer audio: ${singleResult.answerAudio}`)
+    
+    // Check timing configuration
+    const timingConfig = voiceService.getTimingConfig()
+    logger.info(`Timing configuration:`)
+    logger.info(`  - Question duration: ${timingConfig.questionDuration}s`)
+    logger.info(`  - Pause duration: ${timingConfig.pauseDuration}s`)
+    logger.info(`  - Answer duration: ${timingConfig.answerDuration}s`)
+    logger.info(`  - Total duration: ${timingConfig.totalDuration}s`)
+    
+  } catch (error) {
+    logger.error({ error }, '❌ Failed individual question/answer generation test')
+  }
+
+  // Test 7: Cache test (regenerate same text) - UPDATED
+  logger.info('Test 7: Testing cache (regenerating same text)')
   try {
     const repeatText = "Witaj! To jest test generowania mowy."
     const startTime = Date.now()

@@ -3,6 +3,7 @@ import path from 'path'
 import pino from 'pino'
 import crypto from 'crypto'
 import axios from 'axios'
+import { spawn } from 'child_process'
 
 const logger = pino({ name: 'voice-service' })
 
@@ -14,6 +15,9 @@ export interface VoiceOptions {
   similarityBoost?: number
   style?: number
   useSpeakerBoost?: boolean
+  timing?: {
+    maxDuration?: number // maksymalna długość audio w sekundach
+  }
 }
 
 export interface VoiceResult {
@@ -38,17 +42,39 @@ export interface VoiceCacheEntry {
   settings: VoiceSettings
 }
 
+export interface QuestionAnswerAudio {
+  questionAudio: string
+  answerAudio: string
+}
+
+export interface TimingConfig {
+  questionDuration: number
+  pauseDuration: number
+  answerDuration: number
+  totalDuration: number
+}
+
 export class VoiceService {
   private readonly apiKey?: string
   private readonly tempDir: string
   private readonly cacheDir: string
   private readonly cache = new Map<string, VoiceCacheEntry>()
   private availableVoices: any[] = []
+  private timingConfig: TimingConfig
 
   constructor() {
     this.tempDir = path.join(process.cwd(), 'temp')
     this.cacheDir = path.join(process.cwd(), 'cache', 'audio')
     this.apiKey = process.env.ELEVENLABS_API_KEY
+    
+    // Konfiguracja timing z ENV variables
+    this.timingConfig = {
+      questionDuration: parseFloat(process.env.QUESTION_DURATION || '2'),
+      pauseDuration: parseFloat(process.env.PAUSE_DURATION || '3'),
+      answerDuration: parseFloat(process.env.ANSWER_DURATION || '3'),
+      totalDuration: parseFloat(process.env.TOTAL_CLIP_DURATION || '8')
+    }
+    
     this.initializeService()
   }
 
@@ -364,24 +390,261 @@ export class VoiceService {
   }
 
   /**
-   * Generuje audio dla pytań quizu
+   * Generuje oddzielne audio dla pytania i odpowiedzi z kontrolą czasu
    */
-  async generateQuizAudio(questions: Array<{question: string, answer: string}>): Promise<string[]> {
-    const audioFiles: string[] = []
+  async generateQuestionAnswerAudio(options: {
+    question: string
+    answer: string
+    voiceId?: string
+    index?: number
+  }): Promise<QuestionAnswerAudio> {
+    logger.info(`Generating separate question/answer audio for index ${options.index || 0}`)
+    
+    const baseIndex = options.index || 0
+    
+    try {
+      // Generuj audio dla pytania (bez słowa "Odpowiedź:")
+      const questionResult = await this.generateVoice({
+        text: options.question,
+        voiceId: options.voiceId,
+        timing: {
+          maxDuration: this.timingConfig.questionDuration
+        }
+      })
+
+      // Generuj audio dla odpowiedzi (bez słowa "Odpowiedź:")
+      const answerResult = await this.generateVoice({
+        text: options.answer,
+        voiceId: options.voiceId,
+        timing: {
+          maxDuration: this.timingConfig.answerDuration
+        }
+      })
+
+      // Przenieś pliki audio do właściwych nazw
+      const questionAudioPath = path.join(this.tempDir, `voice_question_${baseIndex}.mp3`)
+      const answerAudioPath = path.join(this.tempDir, `voice_answer_${baseIndex}.mp3`)
+
+      await fs.copyFile(questionResult.audioPath, questionAudioPath)
+      await fs.copyFile(answerResult.audioPath, answerAudioPath)
+
+      // Sprawdź i przytnij audio jeśli za długie
+      const finalQuestionAudio = await this.ensureAudioDuration(
+        questionAudioPath, 
+        this.timingConfig.questionDuration,
+        baseIndex,
+        'question'
+      )
+      
+      const finalAnswerAudio = await this.ensureAudioDuration(
+        answerAudioPath, 
+        this.timingConfig.answerDuration,
+        baseIndex,
+        'answer'
+      )
+
+      logger.info(`Generated question/answer audio successfully for index ${baseIndex}`)
+      
+      return {
+        questionAudio: finalQuestionAudio,
+        answerAudio: finalAnswerAudio
+      }
+
+    } catch (error) {
+      logger.error({ error, index: baseIndex }, 'Failed to generate question/answer audio')
+      
+      // Fallback - twórz ciszę
+      const silentQuestionAudio = await this.createSilentAudio(
+        `voice_question_${baseIndex}.mp3`, 
+        this.timingConfig.questionDuration
+      )
+      const silentAnswerAudio = await this.createSilentAudio(
+        `voice_answer_${baseIndex}.mp3`, 
+        this.timingConfig.answerDuration
+      )
+      
+      return {
+        questionAudio: silentQuestionAudio,
+        answerAudio: silentAnswerAudio
+      }
+    }
+  }
+
+  /**
+   * Sprawdza długość audio i przycina jeśli za długie, lub dodaje ciszę jeśli za krótkie
+   */
+  private async ensureAudioDuration(
+    audioPath: string, 
+    targetDuration: number, 
+    index: number,
+    type: 'question' | 'answer'
+  ): Promise<string> {
+    try {
+      // Sprawdź długość audio używając ffprobe
+      const duration = await this.getAudioDuration(audioPath)
+      
+      if (Math.abs(duration - targetDuration) < 0.1) {
+        // Długość jest w porządku
+        return audioPath
+      }
+
+      const adjustedPath = path.join(this.tempDir, `voice_${type}_${index}_adjusted.mp3`)
+
+      if (duration > targetDuration) {
+        // Audio za długie - przytnij
+        logger.info(`Audio too long (${duration}s), trimming to ${targetDuration}s`)
+        await this.trimAudio(audioPath, adjustedPath, targetDuration)
+      } else {
+        // Audio za krótkie - dodaj ciszę na końcu
+        logger.info(`Audio too short (${duration}s), padding to ${targetDuration}s`)
+        await this.padAudio(audioPath, adjustedPath, targetDuration)
+      }
+
+      return adjustedPath
+
+    } catch (error) {
+      logger.warn({ error }, `Failed to adjust audio duration, using original`)
+      return audioPath
+    }
+  }
+
+  /**
+   * Pobiera długość audio w sekundach
+   */
+  private async getAudioDuration(audioPath: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const ffprobe = spawn('ffprobe', [
+        '-v', 'quiet',
+        '-show_entries', 'format=duration',
+        '-of', 'csv=p=0',
+        audioPath
+      ])
+
+      let output = ''
+      ffprobe.stdout.on('data', (data) => {
+        output += data.toString()
+      })
+
+      ffprobe.on('close', (code) => {
+        if (code === 0) {
+          const duration = parseFloat(output.trim())
+          resolve(duration)
+        } else {
+          reject(new Error(`ffprobe failed with code ${code}`))
+        }
+      })
+
+      ffprobe.on('error', reject)
+    })
+  }
+
+  /**
+   * Przycina audio do określonej długości
+   */
+  private async trimAudio(inputPath: string, outputPath: string, duration: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', [
+        '-i', inputPath,
+        '-t', duration.toString(),
+        '-c', 'copy',
+        '-y',
+        outputPath
+      ])
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve()
+        } else {
+          reject(new Error(`Audio trimming failed with code ${code}`))
+        }
+      })
+
+      ffmpeg.on('error', reject)
+    })
+  }
+
+  /**
+   * Dodaje ciszę na końcu audio
+   */
+  private async padAudio(inputPath: string, outputPath: string, targetDuration: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', [
+        '-i', inputPath,
+        '-f', 'lavfi',
+        '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+        '-filter_complex', `[0:a][1:a]concat=n=2:v=0:a=1[out]`,
+        '-map', '[out]',
+        '-t', targetDuration.toString(),
+        '-y',
+        outputPath
+      ])
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve()
+        } else {
+          reject(new Error(`Audio padding failed with code ${code}`))
+        }
+      })
+
+      ffmpeg.on('error', reject)
+    })
+  }
+
+  /**
+   * Tworzy ciszę o określonej długości
+   */
+  private async createSilentAudio(filename: string, duration: number): Promise<string> {
+    const outputPath = path.join(this.tempDir, filename)
+    
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', [
+        '-f', 'lavfi',
+        '-i', `anullsrc=channel_layout=stereo:sample_rate=48000`,
+        '-t', duration.toString(),
+        '-y',
+        outputPath
+      ])
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve(outputPath)
+        } else {
+          reject(new Error(`Silent audio creation failed with code ${code}`))
+        }
+      })
+
+      ffmpeg.on('error', reject)
+    })
+  }
+
+  /**
+   * Pobiera konfigurację timing
+   */
+  getTimingConfig(): TimingConfig {
+    return { ...this.timingConfig }
+  }
+
+  /**
+   * Generuje audio dla pytań quizu - zmodyfikowana wersja używająca nowej metody
+   */
+  async generateQuizAudio(questions: Array<{question: string, answer: string}>): Promise<QuestionAnswerAudio[]> {
+    const audioResults: QuestionAnswerAudio[] = []
     
     for (let i = 0; i < questions.length; i++) {
       try {
         const question = questions[i]
-        const text = `${question.question}. Odpowiedź: ${question.answer}`
         
-        logger.info(`Generating audio for question ${i + 1}/${questions.length}`)
+        logger.info(`Generating separate audio for question ${i + 1}/${questions.length}`)
         
-        const result = await this.generateVoice({
-          text,
-          voiceId: process.env.ELEVENLABS_DEFAULT_VOICE
+        const result = await this.generateQuestionAnswerAudio({
+          question: question.question,
+          answer: question.answer,
+          voiceId: process.env.ELEVENLABS_DEFAULT_VOICE,
+          index: i
         })
         
-        audioFiles.push(result.audioPath)
+        audioResults.push(result)
         
       } catch (error) {
         logger.error({ error, questionIndex: i }, 'Failed to generate quiz audio')
@@ -389,6 +652,6 @@ export class VoiceService {
       }
     }
     
-    return audioFiles
+    return audioResults
   }
 } 

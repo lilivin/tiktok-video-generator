@@ -6,7 +6,7 @@ import pino from 'pino'
 import { QuizQuestion, VideoRenderOptions, DEFAULT_RENDER_OPTIONS } from '../types/video.js'
 import { PromptGeneratorService } from './prompt-generator.js'
 import { AIImageService, AIImageOptions } from './ai-image.js'
-import { VoiceService } from './voice.js'
+import { VoiceService, QuestionAnswerAudio, TimingConfig } from './voice.js'
 
 const logger = pino({ name: 'video-render-service' })
 const __filename = fileURLToPath(import.meta.url)
@@ -287,10 +287,10 @@ export class VideoRenderService {
     })
   }
 
-  async generateVoiceover(questions: QuizQuestion[]): Promise<string[]> {
-    logger.info('Generating voiceover for questions')
+  async generateVoiceover(questions: QuizQuestion[]): Promise<QuestionAnswerAudio[]> {
+    logger.info('Generating voiceover for questions with improved timing')
     
-    const audioFiles: string[] = []
+    const audioResults: QuestionAnswerAudio[] = []
     const isVoiceEnabled = process.env.VOICE_ENABLED === 'true'
     const voiceAvailable = this.voiceService.isAvailable()
     
@@ -299,81 +299,307 @@ export class VideoRenderService {
     for (let i = 0; i < questions.length; i++) {
       try {
         const question = questions[i]
-        const text = `${question.question}. Odpowiedź: ${question.answer}`
         
         if (isVoiceEnabled && voiceAvailable) {
-          // Generuj głos używając VoiceService
-          logger.info(`Generating voice for question ${i}`)
-          const audioPath = await this.generateVoiceAudio(text, i)
-          audioFiles.push(audioPath)
+          // Generuj oddzielne audio używając nowej metody VoiceService
+          logger.info(`Generating separate question/answer audio for question ${i}`)
+          const audioResult = await this.voiceService.generateQuestionAnswerAudio({
+            question: question.question,
+            answer: question.answer,
+            voiceId: process.env.ELEVENLABS_DEFAULT_VOICE,
+            index: i
+          })
+          audioResults.push(audioResult)
         } else {
           // Fallback - cisza
           logger.info(`Using silence for question ${i}`)
-          audioFiles.push(await this.createSilenceAudio(i))
+          const silentAudio = await this.createSilentQuestionAnswerAudio(i)
+          audioResults.push(silentAudio)
         }
       } catch (error) {
         logger.warn({ error, questionIndex: i }, 'Failed to generate voice, using silence')
         // Fallback - cisza
-        audioFiles.push(await this.createSilenceAudio(i))
+        const silentAudio = await this.createSilentQuestionAnswerAudio(i)
+        audioResults.push(silentAudio)
       }
     }
     
-    return audioFiles
+    return audioResults
   }
 
-  private async generateVoiceAudio(text: string, index: number): Promise<string> {
+  /**
+   * Tworzy strukturę audio z ciszą dla fallback
+   */
+  private async createSilentQuestionAnswerAudio(index: number): Promise<QuestionAnswerAudio> {
+    const timingConfig = this.voiceService.getTimingConfig()
+    
+    const questionPath = path.join(this.tempDir, `silent_question_${index}.mp3`)
+    const answerPath = path.join(this.tempDir, `silent_answer_${index}.mp3`)
+    
+    await this.generateSilentAudio(questionPath, timingConfig.questionDuration)
+    await this.generateSilentAudio(answerPath, timingConfig.answerDuration)
+    
+    return {
+      questionAudio: questionPath,
+      answerAudio: answerPath
+    }
+  }
+
+  /**
+   * Generuje pojedynczy kompozytowy plik audio z odpowiednim timingiem
+   * Timeline: Pytanie (0-2s) → Cisza (2-5s) → Odpowiedź (5-8s)
+   */
+  async addVoiceToVideo(audioResult: QuestionAnswerAudio, index: number): Promise<string> {
+    const timingConfig = this.voiceService.getTimingConfig()
+    const outputPath = path.join(this.tempDir, `composite_audio_${index}.mp3`)
+    
     try {
-      logger.info(`Generating voice audio for question ${index}: "${text.substring(0, 50)}..."`)
+      logger.info(`Creating composite audio with timing for question ${index}`)
+      logger.debug(`Question audio: ${audioResult.questionAudio}`)
+      logger.debug(`Answer audio: ${audioResult.answerAudio}`)
       
-      const result = await this.voiceService.generateVoice({
-        text,
-        voiceId: process.env.ELEVENLABS_DEFAULT_VOICE,
-        stability: parseFloat(process.env.ELEVENLABS_STABILITY || '0.5'),
-        similarityBoost: parseFloat(process.env.ELEVENLABS_SIMILARITY_BOOST || '0.75'),
-        style: parseFloat(process.env.ELEVENLABS_STYLE || '0.0'),
-        useSpeakerBoost: process.env.ELEVENLABS_USE_SPEAKER_BOOST !== 'false'
+      // Sprawdź czy pliki audio istnieją
+      try {
+        await fs.access(audioResult.questionAudio)
+        await fs.access(audioResult.answerAudio)
+        logger.debug('Both audio files exist')
+      } catch (error) {
+        logger.error({ error }, 'Audio files do not exist')
+        throw new Error('Required audio files do not exist')
+      }
+      
+      // Twórz plik ciszy dla pauzy
+      const pausePath = path.join(this.tempDir, `pause_${index}.mp3`)
+      logger.debug(`Creating pause audio: ${pausePath}`)
+      await this.generateSilentAudio(pausePath, timingConfig.pauseDuration)
+      
+      // Sprawdź czy plik pauzy został utworzony
+      await fs.access(pausePath)
+      logger.debug('Pause audio created successfully')
+      
+      const audioFilesToConcat = [
+        audioResult.questionAudio,
+        pausePath,
+        audioResult.answerAudio
+      ]
+      
+      logger.info(`Concatenating audio files: ${audioFilesToConcat.join(', ')}`)
+      
+      // Łącz audio w odpowiedniej kolejności: pytanie + pauza + odpowiedź
+      await this.concatenateAudioFiles(audioFilesToConcat, outputPath)
+      
+      // Sprawdź czy plik wyjściowy został utworzony
+      try {
+        await fs.access(outputPath)
+        const stats = await fs.stat(outputPath)
+        logger.info(`Composite audio created successfully: ${outputPath} (${stats.size} bytes)`)
+      } catch (error) {
+        logger.error({ error }, 'Output composite audio file was not created')
+        throw new Error('Output composite audio file was not created')
+      }
+      
+      // Sprawdź czy całkowita długość to 8 sekund i dopasuj jeśli potrzeba
+      const finalPath = await this.ensureTotalAudioDuration(outputPath, timingConfig.totalDuration, index)
+      
+      logger.info(`Created composite audio successfully: ${finalPath}`)
+      return finalPath
+      
+    } catch (error) {
+      logger.error({ error, index }, 'Failed to create composite audio, using fallback')
+      logger.error(`Error details: ${error instanceof Error ? error.message : String(error)}`)
+      
+      // Fallback - zwróć ciszę o długości 8 sekund
+      await this.generateSilentAudio(outputPath, timingConfig.totalDuration)
+      return outputPath
+    }
+  }
+
+  /**
+   * Łączy pliki audio w jeden z re-enkodowaniem (alternatywa gdy copy nie działa)
+   */
+  private async concatenateAudioFilesWithReencode(audioPaths: string[], outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Użyj filter_complex ale z poprawną składnią
+      const inputs = []
+      for (let i = 0; i < audioPaths.length; i++) {
+        inputs.push('-i', audioPaths[i])
+      }
+      
+      const filterInputs = audioPaths.map((_, i) => `[${i}:a]`).join('')  
+      const filterComplex = `${filterInputs}concat=n=${audioPaths.length}:v=0:a=1[out]`
+      
+      const ffmpegArgs = [
+        ...inputs,
+        '-filter_complex', filterComplex,
+        '-map', '[out]',
+        '-c:a', 'mp3',  // Force MP3 encoding
+        '-b:a', '128k', // Set bitrate
+        '-y',
+        outputPath
+      ]
+
+      logger.info(`Concatenating audio files with re-encode: ${audioPaths.join(', ')}`)
+      logger.debug(`FFmpeg args: ${ffmpegArgs.join(' ')}`)
+
+      const ffmpeg = spawn('ffmpeg', ffmpegArgs)
+
+      let stderr = ''
+      
+      ffmpeg.stdout.on('data', (data) => {
+        logger.debug(`FFmpeg concat stdout: ${data}`)
       })
-      
-      logger.info(`Voice audio generated successfully for question ${index}`)
-      return result.audioPath
-      
-    } catch (error) {
-      logger.error({ error, questionIndex: index }, 'Voice generation failed')
-      throw error
-    }
+
+      ffmpeg.stderr.on('data', (data) => {
+        stderr += data.toString()
+        logger.debug(`FFmpeg concat stderr: ${data}`)
+      })
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          logger.info('Audio concatenation with re-encode successful')
+          resolve()
+        } else {
+          logger.error(`Audio concatenation with re-encode failed with code ${code}`)
+          logger.error(`FFmpeg stderr: ${stderr}`)
+          reject(new Error(`Audio concatenation failed with code ${code}: ${stderr}`))
+        }
+      })
+
+      ffmpeg.on('error', (error) => {
+        logger.error({ error }, 'FFmpeg concat with re-encode process error')
+        reject(error)
+      })
+    })
   }
 
-  private async generateTTS(text: string, index: number): Promise<string> {
-    // Stara metoda - będzie używać nowej generateVoiceAudio
-    const elevenlabsKey = process.env.ELEVENLABS_API_KEY
-    
-    if (!elevenlabsKey) {
-      logger.info(`No ElevenLabs API key, using silence for question ${index}`)
-      return this.createSilenceAudio(index)
-    }
+  /**
+   * Łączy pliki audio w jeden
+   */
+  private async concatenateAudioFiles(audioPaths: string[], outputPath: string): Promise<void> {
+    // Tymczasowo używamy zawsze re-encode dla debugowania
+    logger.info('Using re-encode concatenation method for better compatibility')
+    await this.concatenateAudioFilesWithReencode(audioPaths, outputPath)
+  }
 
+  /**
+   * Zapewnia że audio ma dokładnie określoną długość
+   */
+  private async ensureTotalAudioDuration(audioPath: string, targetDuration: number, index: number): Promise<string> {
     try {
-      return await this.generateVoiceAudio(text, index)
+      // Sprawdź aktualną długość
+      const currentDuration = await this.getAudioDuration(audioPath)
+      
+      if (Math.abs(currentDuration - targetDuration) < 0.1) {
+        // Długość jest w porządku
+        return audioPath
+      }
+
+      const adjustedPath = path.join(this.tempDir, `composite_audio_${index}_final.mp3`)
+
+      if (currentDuration > targetDuration) {
+        // Za długie - przytnij
+        logger.info(`Composite audio too long (${currentDuration}s), trimming to ${targetDuration}s`)
+        await this.trimAudio(audioPath, adjustedPath, targetDuration)
+      } else {
+        // Za krótkie - dodaj ciszę na końcu
+        logger.info(`Composite audio too short (${currentDuration}s), padding to ${targetDuration}s`)
+        await this.padAudio(audioPath, adjustedPath, targetDuration)
+      }
+
+      return adjustedPath
+
     } catch (error) {
-      logger.warn({ error }, 'Failed to generate TTS, using silence')
-      return this.createSilenceAudio(index)
+      logger.warn({ error }, 'Failed to adjust total audio duration, using original')
+      return audioPath
     }
   }
 
-  private async createSilenceAudio(index: number): Promise<string> {
-    // Tworzymy pusty plik audio używając FFmpeg
-    const audioPath = path.join(this.tempDir, `silence_${index}.mp3`)
-    
-    try {
-      await this.generateSilentAudio(audioPath, 10) // 10 sekund ciszy
-    } catch (error) {
-      // Fallback - pusty plik
-      await fs.writeFile(audioPath, Buffer.alloc(100))
-    }
-    
-    return audioPath
+  /**
+   * Pobiera długość audio w sekundach
+   */
+  private async getAudioDuration(audioPath: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const ffprobe = spawn('ffprobe', [
+        '-v', 'quiet',
+        '-show_entries', 'format=duration',
+        '-of', 'csv=p=0',
+        audioPath
+      ])
+
+      let output = ''
+      ffprobe.stdout.on('data', (data) => {
+        output += data.toString()
+      })
+
+      ffprobe.on('close', (code) => {
+        if (code === 0) {
+          const duration = parseFloat(output.trim())
+          resolve(duration)
+        } else {
+          reject(new Error(`ffprobe failed with code ${code}`))
+        }
+      })
+
+      ffprobe.on('error', reject)
+    })
   }
 
+  /**
+   * Przycina audio do określonej długości
+   */
+  private async trimAudio(inputPath: string, outputPath: string, duration: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', [
+        '-i', inputPath,
+        '-t', duration.toString(),
+        '-c', 'copy',
+        '-y',
+        outputPath
+      ])
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve()
+        } else {
+          reject(new Error(`Audio trimming failed with code ${code}`))
+        }
+      })
+
+      ffmpeg.on('error', reject)
+    })
+  }
+
+  /**
+   * Dodaje ciszę na końcu audio
+   */
+  private async padAudio(inputPath: string, outputPath: string, targetDuration: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', [
+        '-i', inputPath,
+        '-f', 'lavfi',
+        '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+        '-filter_complex', `[0:a][1:a]concat=n=2:v=0:a=1[out]`,
+        '-map', '[out]',
+        '-t', targetDuration.toString(),
+        '-y',
+        outputPath
+      ])
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          resolve()
+        } else {
+          reject(new Error(`Audio padding failed with code ${code}`))
+        }
+      })
+
+      ffmpeg.on('error', reject)
+    })
+  }
+
+  /**
+   * Generuje ciszę o określonej długości
+   */
   private generateSilentAudio(outputPath: string, duration: number): Promise<void> {
     return new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', [
@@ -400,13 +626,13 @@ export class VideoRenderService {
     title: string
     questions: QuizQuestion[]
     backgrounds: string[]
-    audioFiles: string[]
+    audioFiles: QuestionAnswerAudio[]
   }): Promise<string> {
-    logger.info('Creating video with FFmpeg')
+    logger.info('Creating video with FFmpeg using improved audio timing')
     logger.info(`Title: ${options.title}`)
     logger.info(`Questions count: ${options.questions.length}`)
     logger.info(`Backgrounds count: ${options.backgrounds.length}`)
-    logger.info(`Audio files count: ${options.audioFiles.length}`)
+    logger.info(`Audio results count: ${options.audioFiles.length}`)
     
     try {
       const outputPath = path.join(this.outputDir, `quiz_video_${Date.now()}.mp4`)
@@ -414,7 +640,7 @@ export class VideoRenderService {
       
       // Check if we have proper backgrounds and questions
       if (options.backgrounds.length > 0 && options.questions.length > 0) {
-        logger.info('Creating proper quiz video with backgrounds and text overlays')
+        logger.info('Creating proper quiz video with backgrounds and improved audio timing')
         await this.createQuizVideo(outputPath, options)
       } else {
         logger.info('Missing backgrounds or questions, creating fallback video')
@@ -434,9 +660,9 @@ export class VideoRenderService {
     title: string
     questions: QuizQuestion[]
     backgrounds: string[]
-    audioFiles: string[]
+    audioFiles: QuestionAnswerAudio[]
   }): Promise<void> {
-    logger.info('Creating quiz video with multiple segments')
+    logger.info('Creating quiz video with multiple segments and improved audio timing')
     
     // Create individual video segments for each question
     const segmentPaths: string[] = []
@@ -445,9 +671,12 @@ export class VideoRenderService {
       const segmentPath = path.join(this.tempDir, `segment_${i}.mp4`)
       const question = options.questions[i]
       const background = options.backgrounds[i]
-      const audioFile = options.audioFiles[i] || await this.createSilenceAudio(i)
+      const audioResult = options.audioFiles[i] || await this.createSilentQuestionAnswerAudio(i)
       
-      await this.createQuestionSegment(segmentPath, question, background, audioFile, i)
+      // Twórz kompozytowy plik audio z odpowiednim timingiem
+      const compositeAudioPath = await this.addVoiceToVideo(audioResult, i)
+      
+      await this.createQuestionSegment(segmentPath, question, background, compositeAudioPath, i)
       segmentPaths.push(segmentPath)
     }
     

@@ -2,6 +2,7 @@ import { Queue, Worker, Job } from 'bullmq'
 import IORedis from 'ioredis'
 import type { VideoGenerationJob } from '../types/video.js'
 import { VideoRenderService } from './video-render.js'
+import { QuestionAnswerAudio } from './voice.js'
 import pino from 'pino'
 
 const logger = pino({ name: 'queue-service' })
@@ -46,18 +47,18 @@ const videoWorker = new Worker(
       
       const backgrounds = await renderService.generateBackgrounds(jobData.questions)
       
-      // Krok 2: Generowanie lektora (opcjonalnie)
+      // Krok 2: Generowanie lektora z nowym systemem timing (opcjonalnie)
       updateJobStatus(jobData.id, {
         progress: 40,
-        message: 'Generowanie lektora...'
+        message: 'Generowanie lektora z poprawnym timingiem...'
       })
       
-      const audioFiles = await renderService.generateVoiceover(jobData.questions)
+      const audioFiles: QuestionAnswerAudio[] = await renderService.generateVoiceover(jobData.questions)
       
       // Krok 3: Kompozycja wideo
       updateJobStatus(jobData.id, {
         progress: 60,
-        message: 'Kompozycja wideo...'
+        message: 'Kompozycja wideo z poprawnym timingiem audio...'
       })
       
       const videoPath = await renderService.renderVideo({

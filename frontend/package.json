@@ -13,6 +13,7 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@astrojs/check": "^0.9.4",
     "@astrojs/react": "^4.3.0",
     "@astrojs/tailwind": "^5.1.0",
     "@hookform/resolvers": "^5.1.1",
@@ -38,7 +39,7 @@
     "eslint-plugin-jsx-a11y": "^6.8.0",
     "prettier": "^3.1.0",
     "prettier-plugin-astro": "^0.12.2",
-    "typescript": "^5.3.3",
+    "typescript": "^5.8.3",
     "vitest": "^1.0.4"
   },
   "engines": {
