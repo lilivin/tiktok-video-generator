@@ -4,8 +4,11 @@ import pino from 'pino'
 import crypto from 'crypto'
 import axios from 'axios'
 import { spawn } from 'child_process'
+import { fileURLToPath } from 'url'
 
 const logger = pino({ name: 'voice-service' })
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 export interface VoiceOptions {
   text: string
@@ -52,12 +55,14 @@ export interface TimingConfig {
   pauseDuration: number
   answerDuration: number
   totalDuration: number
+  countdownEnabled: boolean
 }
 
 export class VoiceService {
   private readonly apiKey?: string
   private readonly tempDir: string
   private readonly cacheDir: string
+  private readonly assetsDir: string
   private readonly cache = new Map<string, VoiceCacheEntry>()
   private availableVoices: any[] = []
   private timingConfig: TimingConfig
@@ -65,14 +70,16 @@ export class VoiceService {
   constructor() {
     this.tempDir = path.join(process.cwd(), 'temp')
     this.cacheDir = path.join(process.cwd(), 'cache', 'audio')
+    this.assetsDir = path.join(process.cwd(), 'assets')
     this.apiKey = process.env.ELEVENLABS_API_KEY
     
     // Konfiguracja timing z ENV variables
     this.timingConfig = {
-      questionDuration: parseFloat(process.env.QUESTION_DURATION || '2'),
+      questionDuration: parseFloat(process.env.QUESTION_DURATION || '3'),
       pauseDuration: parseFloat(process.env.PAUSE_DURATION || '3'),
-      answerDuration: parseFloat(process.env.ANSWER_DURATION || '3'),
-      totalDuration: parseFloat(process.env.TOTAL_CLIP_DURATION || '8')
+      answerDuration: parseFloat(process.env.ANSWER_DURATION || '2'),
+      totalDuration: parseFloat(process.env.TOTAL_CLIP_DURATION || '8'),
+      countdownEnabled: process.env.COUNTDOWN_ENABLED !== 'false' // Default: enabled
     }
     
     this.initializeService()
@@ -622,7 +629,136 @@ export class VoiceService {
    * Pobiera konfigurację timing
    */
   getTimingConfig(): TimingConfig {
-    return { ...this.timingConfig }
+    return this.timingConfig
+  }
+
+  /**
+   * Generuje audio stopera: tick-tick-dong dla odliczania 3-2-1
+   */
+  async generateCountdownAudio(index: number): Promise<string> {
+    const outputPath = path.join(this.tempDir, `countdown_${index}.mp3`)
+    
+    if (!this.timingConfig.countdownEnabled) {
+      logger.info('Countdown disabled, generating silent audio')
+      await this.createSilentAudio(`countdown_${index}.mp3`, this.timingConfig.pauseDuration)
+      return outputPath
+    }
+
+    try {
+      logger.info(`Generating countdown audio for question ${index}`)
+      
+      // Ścieżki do plików dźwiękowych
+      const tickPath = path.join(this.assetsDir, 'tick.mp3')
+      const dongPath = path.join(this.assetsDir, 'dong.mp3')
+      
+      // Sprawdź czy pliki istnieją
+      await fs.access(tickPath)
+      await fs.access(dongPath)
+      
+      // Stwórz dodatkową ciszę między dźwiękami (0.9s ciszy + 0.1s dźwięk = 1s na cyfrę)
+      const silenceShortPath = path.join(this.tempDir, `silence_short_${index}.mp3`)
+      const silenceMediumPath = path.join(this.tempDir, `silence_medium_${index}.mp3`)
+      
+      await this.createSilentAudio(`silence_short_${index}.mp3`, 0.9) // 0.9s ciszy
+      await this.createSilentAudio(`silence_medium_${index}.mp3`, 0.7) // 0.7s ciszy
+      
+      // Utwórz sekwencję: tick + cisza + tick + cisza + dong
+      // Timeline: tick (0-1s), tick (1-2s), dong (2-3s)
+      const audioSequence = [
+        tickPath,        // 0.1s - cyfra "3"
+        silenceShortPath, // 0.9s - cisza
+        tickPath,        // 0.1s - cyfra "2" 
+        silenceShortPath, // 0.9s - cisza
+        dongPath,        // 0.3s - cyfra "1"
+        silenceMediumPath // 0.7s - cisza do pełnych 3s
+      ]
+      
+      // Połącz audio w sekwencję
+      await this.concatenateCountdownAudio(audioSequence, outputPath)
+      
+      logger.info(`Countdown audio generated successfully: ${outputPath}`)
+      return outputPath
+      
+    } catch (error) {
+      logger.error({ error, index }, 'Failed to generate countdown audio, using fallback silence')
+      await this.createSilentAudio(`countdown_${index}.mp3`, this.timingConfig.pauseDuration)
+      return outputPath
+    }
+  }
+
+  /**
+   * Łączy pliki audio dla stopera
+   */
+  private async concatenateCountdownAudio(audioPaths: string[], outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const inputs = []
+      for (let i = 0; i < audioPaths.length; i++) {
+        inputs.push('-i', audioPaths[i])
+      }
+      
+      const filterInputs = audioPaths.map((_, i) => `[${i}:a]`).join('')  
+      const filterComplex = `${filterInputs}concat=n=${audioPaths.length}:v=0:a=1[out]`
+      
+      const ffmpegArgs = [
+        ...inputs,
+        '-filter_complex', filterComplex,
+        '-map', '[out]',
+        '-c:a', 'mp3',
+        '-b:a', '128k',
+        '-y',
+        outputPath
+      ]
+
+      logger.debug(`Concatenating countdown audio: ${ffmpegArgs.join(' ')}`)
+
+      const ffmpeg = spawn('ffmpeg', ffmpegArgs)
+
+      let stderr = ''
+      
+      ffmpeg.stdout.on('data', (data) => {
+        logger.debug(`FFmpeg countdown stdout: ${data}`)
+      })
+
+      ffmpeg.stderr.on('data', (data) => {
+        stderr += data.toString()
+        logger.debug(`FFmpeg countdown stderr: ${data}`)
+      })
+
+      ffmpeg.on('close', (code) => {
+        if (code === 0) {
+          logger.info('Countdown audio concatenation successful')
+          resolve()
+        } else {
+          logger.error(`Countdown audio concatenation failed with code ${code}`)
+          logger.error(`FFmpeg stderr: ${stderr}`)
+          reject(new Error(`Countdown audio concatenation failed: ${stderr}`))
+        }
+      })
+
+      ffmpeg.on('error', (error) => {
+        logger.error({ error }, 'FFmpeg countdown process error')
+        reject(error)
+      })
+    })
+  }
+
+  /**
+   * Generuje audio intro z tekstem "Nie odpowiesz, odpadasz - {title}"
+   */
+  async generateIntroAudio(title: string, voiceId?: string): Promise<VoiceResult> {
+    const introText = `Nie odpowiesz, odpadasz - ${title}`
+    
+    logger.info(`Generating intro audio: "${introText}"`)
+    
+    const options: VoiceOptions = {
+      text: introText,
+      voiceId: voiceId || process.env.ELEVENLABS_DEFAULT_VOICE,
+      timing: {
+        maxDuration: 5 // Maksymalnie 5 sekund dla intro
+      }
+    }
+    
+    return await this.generateVoice(options)
   }
 
   /**

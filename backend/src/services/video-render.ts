@@ -368,24 +368,23 @@ export class VideoRenderService {
         throw new Error('Required audio files do not exist')
       }
       
-      // Twórz plik ciszy dla pauzy
-      const pausePath = path.join(this.tempDir, `pause_${index}.mp3`)
-      logger.debug(`Creating pause audio: ${pausePath}`)
-      await this.generateSilentAudio(pausePath, timingConfig.pauseDuration)
+      // Generuj audio stopera zamiast ciszy
+      logger.info(`Generating countdown audio for question ${index}`)
+      const countdownPath = await this.voiceService.generateCountdownAudio(index)
       
-      // Sprawdź czy plik pauzy został utworzony
-      await fs.access(pausePath)
-      logger.debug('Pause audio created successfully')
+      // Sprawdź czy plik stopera został utworzony
+      await fs.access(countdownPath)
+      logger.debug('Countdown audio created successfully')
       
       const audioFilesToConcat = [
         audioResult.questionAudio,
-        pausePath,
+        countdownPath,
         audioResult.answerAudio
       ]
       
       logger.info(`Concatenating audio files: ${audioFilesToConcat.join(', ')}`)
       
-      // Łącz audio w odpowiedniej kolejności: pytanie + pauza + odpowiedź
+      // Łącz audio w odpowiedniej kolejności: pytanie + stoper + odpowiedź
       await this.concatenateAudioFiles(audioFilesToConcat, outputPath)
       
       // Sprawdź czy plik wyjściowy został utworzony
@@ -662,11 +661,48 @@ export class VideoRenderService {
     backgrounds: string[]
     audioFiles: QuestionAnswerAudio[]
   }): Promise<void> {
-    logger.info('Creating quiz video with multiple segments and improved audio timing')
+    logger.info('Creating quiz video with intro segment and improved audio timing')
     
-    // Create individual video segments for each question
+    // Create individual video segments 
     const segmentPaths: string[] = []
     
+    // Generate intro audio if voice is enabled
+    const isVoiceEnabled = process.env.VOICE_ENABLED === 'true'
+    const enableIntro = process.env.INTRO_ENABLED !== 'false' // Default: enabled
+    const voiceAvailable = this.voiceService.isAvailable()
+    
+    logger.info(`Intro debug - isVoiceEnabled: ${isVoiceEnabled}, enableIntro: ${enableIntro}, voiceAvailable: ${voiceAvailable}`)
+    
+    if (enableIntro && isVoiceEnabled && voiceAvailable) {
+      try {
+        logger.info('✅ All intro conditions met - generating intro audio and segment')
+        
+        // Generate intro audio
+        const introAudioResult = await this.voiceService.generateIntroAudio(
+          options.title,
+          process.env.ELEVENLABS_DEFAULT_VOICE
+        )
+        
+        logger.info(`✅ Intro audio generated: ${introAudioResult.audioPath}`)
+        
+        // Create intro segment
+        const introSegmentPath = path.join(this.tempDir, 'intro_segment.mp4')
+        await this.createIntroSegment(introSegmentPath, options.title, introAudioResult.audioPath, 4)
+        segmentPaths.push(introSegmentPath)
+        
+        logger.info(`✅ Intro segment created successfully: ${introSegmentPath}`)
+      } catch (error) {
+        logger.warn({ error }, 'Failed to create intro segment, continuing without intro')
+      }
+    } else {
+      logger.warn(`❌ Intro conditions NOT met:`)
+      logger.warn(`   enableIntro: ${enableIntro}`)
+      logger.warn(`   isVoiceEnabled: ${isVoiceEnabled}`)
+      logger.warn(`   voiceAvailable: ${voiceAvailable}`)
+      logger.warn(`   Skipping intro generation`)
+    }
+    
+    // Create question segments
     for (let i = 0; i < options.questions.length && i < options.backgrounds.length; i++) {
       const segmentPath = path.join(this.tempDir, `segment_${i}.mp4`)
       const question = options.questions[i]
@@ -680,11 +716,78 @@ export class VideoRenderService {
       segmentPaths.push(segmentPath)
     }
     
-    // Concatenate all segments
+    logger.info(`📋 Total segments to concatenate: ${segmentPaths.length}`)
+    segmentPaths.forEach((path, index) => {
+      logger.info(`   Segment ${index}: ${path}`)
+    })
+    
+    // Concatenate all segments (intro + questions)
     await this.concatenateSegments(segmentPaths, outputPath)
     
     // Cleanup segment files
     await this.cleanup(segmentPaths)
+  }
+
+  private async createIntroSegment(
+    outputPath: string,
+    title: string,
+    introAudioPath: string,
+    duration: number = 4
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      logger.info(`Creating intro segment for quiz: "${title.substring(0, 50)}..."`)
+      
+      // Escape text for FFmpeg
+      const escapedTitle = this.escapeFFmpegText(`Nie odpowiesz, odpadasz - ${title}`)
+      
+      // Use available system font with fallback
+      const fontPath = '/System/Library/Fonts/Helvetica.ttc'
+      
+      // Simplified FFmpeg approach - use lavfi inputs
+      const ffmpegArgs = [
+        '-f', 'lavfi',
+        '-i', `color=color=#667eea:size=1080x1920:rate=25:duration=${duration}`,
+        '-i', introAudioPath,
+        '-vf', `drawtext=fontfile=${fontPath}:text='${escapedTitle}':fontcolor=white:fontsize=52:box=1:boxcolor=black@0.8:boxborderw=12:x=(w-text_w)/2:y=(h-text_h)/2:enable='gte(t,0.5)'`,
+        '-c:v', 'libx264',
+        '-c:a', 'aac',
+        '-t', duration.toString(),
+        '-pix_fmt', 'yuv420p',
+        '-shortest',
+        '-y',
+        outputPath
+      ]
+
+      logger.info(`FFmpeg intro args: ${ffmpegArgs.join(' ')}`)
+
+      const ffmpeg = spawn('ffmpeg', ffmpegArgs)
+
+      let stderr = ''
+      
+      ffmpeg.stdout.on('data', (data) => {
+        logger.debug(`FFmpeg intro stdout: ${data}`)
+      })
+
+      ffmpeg.stderr.on('data', (data) => {
+        stderr += data.toString()
+        logger.debug(`FFmpeg intro stderr: ${data}`)
+      })
+
+      ffmpeg.on('close', (code) => {
+        logger.info(`FFmpeg intro process closed with code ${code}`)
+        if (code === 0) {
+          resolve()
+        } else {
+          logger.error(`FFmpeg intro stderr: ${stderr}`)
+          reject(new Error(`FFmpeg intro creation failed with code ${code}`))
+        }
+      })
+
+      ffmpeg.on('error', (error) => {
+        logger.error({ error }, 'FFmpeg intro process error')
+        reject(error)
+      })
+    })
   }
 
   private async createQuestionSegment(
@@ -704,15 +807,31 @@ export class VideoRenderService {
       // Use available system font with fallback
       const fontPath = '/System/Library/Fonts/Helvetica.ttc'
       
+      // Konfiguracja stopera
+      const timingConfig = this.voiceService.getTimingConfig()
+      const countdownEnabled = timingConfig.countdownEnabled
+      
+      // Buduj filtry FFmpeg z animowanym stoperem
+      let filterComplex = `
+        [0:v]scale=1080:1920,setsar=1[bg];
+        [bg]drawtext=fontfile=${fontPath}:text='${escapedQuestion}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.7:boxborderw=10:x=(w-text_w)/2:y=(h-text_h)/2-100[q];
+        [q]drawtext=fontfile=${fontPath}:text='${escapedAnswer}':fontcolor=yellow:fontsize=42:box=1:boxcolor=black@0.7:boxborderw=8:x=(w-text_w)/2:y=(h-text_h)/2+100:enable='gte(t,6)'[ans]`
+      
+      if (countdownEnabled) {
+        // Dodaj animowany stoper 3-2-1 w czasie 3-6s
+        filterComplex += `;
+        [ans]drawtext=fontfile=${fontPath}:text='3':fontcolor=red:fontsize=120:box=1:boxcolor=black@0.8:boxborderw=15:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,3,4)'[c3];
+        [c3]drawtext=fontfile=${fontPath}:text='2':fontcolor=orange:fontsize=120:box=1:boxcolor=black@0.8:boxborderw=15:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,4,5)'[c2];
+        [c2]drawtext=fontfile=${fontPath}:text='1':fontcolor=green:fontsize=120:box=1:boxcolor=black@0.8:boxborderw=15:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,5,6)'[v]`
+      } else {
+        filterComplex += '[ans]null[v]'
+      }
+      
       const ffmpegArgs = [
         '-loop', '1',
         '-i', backgroundPath,
         '-i', audioPath,
-        '-filter_complex', `
-          [0:v]scale=1080:1920,setsar=1[bg];
-          [bg]drawtext=fontfile=${fontPath}:text='${escapedQuestion}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.7:boxborderw=10:x=(w-text_w)/2:y=(h-text_h)/2-100[q];
-          [q]drawtext=fontfile=${fontPath}:text='${escapedAnswer}':fontcolor=yellow:fontsize=42:box=1:boxcolor=black@0.7:boxborderw=8:x=(w-text_w)/2:y=(h-text_h)/2+100[v]
-        `,
+        '-filter_complex', filterComplex,
         '-map', '[v]',
         '-map', '1:a',
         '-c:v', 'libx264',

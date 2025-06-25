@@ -9,6 +9,7 @@ export interface VideoGenerationRequest {
   questions: QuizQuestion[]
   enableVoice?: boolean // Nowa opcja dla głosu
   voiceSettings?: VoiceGenerationOptions // Ustawienia głosu
+  enableIntro?: boolean // Nowa opcja dla intro
 }
 
 export interface VoiceGenerationOptions {
@@ -33,6 +34,7 @@ export interface VideoGenerationJob {
   updatedAt: Date
   enableVoice?: boolean // Dodane dla voice
   voiceSettings?: VoiceGenerationOptions // Dodane dla voice
+  enableIntro?: boolean // Dodane dla intro
 }
 
 export interface VideoRenderOptions {
@@ -44,6 +46,8 @@ export interface VideoRenderOptions {
   voiceover?: boolean
   language?: 'pl' | 'en'
   voiceSettings?: VoiceGenerationOptions // Dodane dla voice
+  enableIntro?: boolean // Dodane dla intro
+  introDuration?: number // Długość intro w sekundach
 }
 
 export const DEFAULT_RENDER_OPTIONS: VideoRenderOptions = {
@@ -52,5 +56,7 @@ export const DEFAULT_RENDER_OPTIONS: VideoRenderOptions = {
   fps: 30,
   durationPerQuestion: 10, // 10 sekund na pytanie
   voiceover: false,
-  language: 'pl'
+  language: 'pl',
+  enableIntro: true, // Domyślnie włączone
+  introDuration: 4 // 4 sekundy intro
 } 

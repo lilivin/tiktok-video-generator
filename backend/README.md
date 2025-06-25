@@ -1,38 +1,169 @@
-# TikTok Video Generator Backend
+# Backend - TikTok Video Generator
 
-## Quick Start
+Backend aplikacji do generowania filmów typu quiz na TikTok z wykorzystaniem AI.
 
-1. **Install dependencies**
+## Funkcjonalności
+
+- **Generowanie pytań quiz** - automatyczne tworzenie pytań z odpowiedziami
+- **Synteza mowy** - lektor AI (ElevenLabs) z polskim głosem  
+- **Generowanie teł AI** - automatyczne tła dopasowane do treści pytań
+- **Sekcja intro** - "Nie odpowiesz, odpadasz - {tytuł quizu}" na początku filmu
+- **Renderowanie wideo** - automatyczne tworzenie filmów w formacie TikTok (9:16)
+- **System kolejki** - Redis + BullMQ do przetwarzania zadań
+
+## Konfiguracja
+
+Create a `.env` file with your API keys:
+
+```env
+# API Keys
+ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
+REPLICATE_API_TOKEN=your_replicate_token_here
+
+# Voice Configuration
+VOICE_ENABLED=true
+ELEVENLABS_DEFAULT_VOICE=9BWtsMINqrJLrRacOk9x
+
+# Audio Timing
+QUESTION_DURATION=3
+PAUSE_DURATION=3
+ANSWER_DURATION=2
+TOTAL_CLIP_DURATION=8
+COUNTDOWN_ENABLED=true
+
+# Intro Configuration
+INTRO_ENABLED=true
+
+# AI Images
+AI_IMAGE_ENABLED=true
+AI_IMAGE_PROVIDER=openai
+
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+```
+
+## Sekcja Intro
+
+Nowa funkcjonalność dodaje sekcję intro na początku każdego filmu:
+
+- **Tekst**: "Nie odpowiesz, odpadasz - {tytuł quizu}"
+- **Długość**: ~4 sekundy
+- **Pozycja**: Przed pierwszym pytaniem  
+- **Głos**: ElevenLabs z tym samym głosem co pytania
+- **Tło**: Gradient kolorowy (#667eea)
+
+### Konfiguracja Intro
+
+```env
+# Włącz/wyłącz intro (domyślnie: włączone)
+INTRO_ENABLED=true
+```
+
+Intro jest automatycznie dodawane gdy:
+- `INTRO_ENABLED` != 'false'
+- `VOICE_ENABLED` = 'true'  
+- ElevenLabs API jest dostępne
+
+## Timeline Wideo
+
+🎯 **Nowy timeline z intro:**
+
+```
+0:00-0:04 - Intro: "Nie odpowiesz, odpadasz - {tytuł}"
+0:04-0:12 - Pytanie 1 (8s)
+0:12-0:20 - Pytanie 2 (8s)
+0:20-0:28 - Pytanie 3 (8s)
+...
+```
+
+## Instalacja
+
 ```bash
 npm install
 ```
 
-2. **Set up environment variables**
-Create a `.env` file with your API keys:
+## Uruchomienie
+
 ```bash
-# Enable AI Background Generation
+# Development
+npm run dev
+
+# Production
+npm start
+```
+
+## API Endpoints
+
+### Generate Video
+```
+POST /api/video/generate
+Content-Type: application/json
+
+{
+  "title": "Quiz o historii",
+  "questions": [
+    {
+      "question": "Kto odkrył Amerykę?",
+      "answer": "Krzysztof Kolumb"
+    }
+  ],
+  "enableIntro": true
+}
+```
+
+### Check Status
+```
+GET /api/video/status/:jobId
+```
+
+### Download Video
+```
+GET /api/video/download/:jobId/:filename
+```
+
+## Architektura
+
+- **Fastify** - Web framework
+- **Redis + BullMQ** - Queue system
+- **ElevenLabs** - Text-to-speech
+- **OpenAI/Replicate** - AI image generation  
+- **FFmpeg** - Video processing
+
+## Development
+
+### Basic Setup (.env)
+```env
+ELEVENLABS_API_KEY=your_key
+VOICE_ENABLED=true
+INTRO_ENABLED=true
+```
+
+### Advanced Setup (.env)
+```env
+# All voice features
+VOICE_ENABLED=true
+VOICE_CACHE_ENABLED=true
+COUNTDOWN_ENABLED=true
+INTRO_ENABLED=true
+
+# AI images  
 AI_IMAGE_ENABLED=true
 AI_IMAGE_PROVIDER=openai
-
-# OpenAI API Key (recommended)
-OPENAI_API_KEY=your_openai_key_here
-
-# OR Replicate Token (alternative)
-REPLICATE_API_TOKEN=your_replicate_token_here
-
-# Optional settings
-AI_IMAGE_QUALITY=standard
-AI_IMAGE_CACHE_ENABLED=true
+OPENAI_API_KEY=your_key
 ```
 
-3. **Test the AI system**
-```bash
-npm run test:ai
-```
+## Logging
 
-4. **Start the server**
+Aplikacja używa structured logging (Pino):
+
 ```bash
-npm run dev
+# Zobacz logi intro
+tail -f logs/app.log | grep "intro"
+
+# Zobacz logi voice
+tail -f logs/app.log | grep "voice" 
 ```
 
 ## AI Background Generation
@@ -179,7 +310,4 @@ src/
 ## API Endpoints
 
 - `POST /api/video/generate` - Generate video with AI backgrounds
-- `GET /api/video/status/:jobId` - Check generation status
-- `GET /api/video/download/:jobId/:filename` - Download generated video
-
-For detailed AI setup instructions, see [AI_SETUP.md](./AI_SETUP.md). 
+- `
