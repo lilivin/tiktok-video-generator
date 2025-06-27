@@ -83,33 +83,32 @@ export class VideoRenderService {
     try {
       logger.info(`Starting AI background generation for question ${index}: "${questionText.substring(0, 50)}..."`)
       
-      // Analizuj pytanie i wygeneruj kontekst
+      // Analizuj pytanie dla lepszego promptu
       const context = this.promptGenerator.analyzeQuestion(questionText)
-      logger.info(`Question analysis complete - Category: ${context.category}, Style: ${context.style}`)
+      logger.info(`Question analysis complete - Topic: ${context.topic}`)
       
-      // Wygeneruj prompt dla AI
-      const prompt = this.promptGenerator.generatePrompt(context, questionText)
-      logger.info(`Generated AI prompt: "${prompt.substring(0, 100)}..."`)
-      
-      // Przygotuj opcje dla AI
-      const aiOptions: AIImageOptions = {
-        prompt,
-        size: '1024x1792', // Vertical for TikTok
-        quality: (process.env.AI_IMAGE_QUALITY as 'standard' | 'hd') || 'standard',
-        style: context.style === 'dramatic' ? 'vivid' : 'natural',
-        provider: (process.env.AI_IMAGE_PROVIDER as 'openai' | 'replicate') || undefined
+      // Generuj AI tło jeśli jest włączone
+      if (process.env.AI_IMAGE_ENABLED === 'true' && this.aiImageService.isAvailable()) {
+        const prompt = this.promptGenerator.generatePrompt(context, questionText)
+        
+        const aiResult = await this.aiImageService.generateImage({
+          prompt,
+          size: '1024x1792', // Vertical for TikTok
+          quality: 'standard',
+          style: 'natural',
+          provider: (process.env.AI_IMAGE_PROVIDER as 'fal' | 'replicate') || undefined
+        })
+        
+        logger.info(`AI background generated successfully for question ${index} using ${aiResult.provider}`)
+        
+        // Opcjonalnie skaluj obraz do odpowiedniego rozmiaru
+        const scaledImagePath = await this.scaleImageIfNeeded(aiResult.imagePath, index)
+        
+        return scaledImagePath
+      } else {
+        logger.warn(`AI background generation disabled for question ${index}`)
+        throw new Error('AI background generation disabled')
       }
-      
-      // Wygeneruj obraz
-      const result = await this.aiImageService.generateImage(aiOptions)
-      
-      logger.info(`AI background generated successfully for question ${index} using ${result.provider}`)
-      
-      // Opcjonalnie skaluj obraz do odpowiedniego rozmiaru
-      const scaledImagePath = await this.scaleImageIfNeeded(result.imagePath, index)
-      
-      return scaledImagePath
-      
     } catch (error) {
       logger.error({ error, questionIndex: index }, 'AI background generation failed')
       throw error

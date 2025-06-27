@@ -1,8 +1,8 @@
-import OpenAI from 'openai'
+import { fal } from '@fal-ai/client'
 import Replicate from 'replicate'
 import axios from 'axios'
 import { promises as fs } from 'fs'
-import path from 'path'
+import * as path from 'path'
 import pino from 'pino'
 
 const logger = pino({ name: 'ai-image-service' })
@@ -12,7 +12,7 @@ export interface AIImageOptions {
   size?: '1024x1024' | '1024x1792' | '1792x1024'
   quality?: 'standard' | 'hd'
   style?: 'vivid' | 'natural'
-  provider?: 'openai' | 'replicate'
+  provider?: 'fal' | 'replicate'
 }
 
 export interface AIImageResult {
@@ -30,7 +30,7 @@ export interface ImageCacheEntry {
 }
 
 export class AIImageService {
-  private openai?: OpenAI
+  private falInitialized: boolean = false
   private replicate?: Replicate
   private readonly tempDir: string
   private readonly cacheDir: string
@@ -41,15 +41,19 @@ export class AIImageService {
     this.cacheDir = path.join(process.cwd(), 'cache', 'images')
     this.initializeProviders()
     this.initializeCache()
+    this.initializeTempDir()
   }
 
   private initializeProviders(): void {
-    // Inicjalizuj OpenAI jeśli jest klucz API
-    if (process.env.OPENAI_API_KEY) {
-      this.openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY
+    // Inicjalizuj fal.ai jeśli jest klucz API
+    if (process.env.FAL_AI_API_KEY) {
+      fal.config({
+        credentials: process.env.FAL_AI_API_KEY
       })
-      logger.info('OpenAI provider initialized')
+      this.falInitialized = true
+      logger.info('fal.ai Ideogram v3 provider initialized')
+    } else {
+      logger.warn('FAL_AI_API_KEY not found')
     }
 
     // Inicjalizuj Replicate jeśli jest token
@@ -60,7 +64,7 @@ export class AIImageService {
       logger.info('Replicate provider initialized')
     }
 
-    if (!this.openai && !this.replicate) {
+    if (!this.falInitialized && !this.replicate) {
       logger.warn('No AI image providers configured. Images will fallback to gradients.')
     }
   }
@@ -75,6 +79,14 @@ export class AIImageService {
       }
     } catch (error) {
       logger.warn({ error }, 'Failed to initialize image cache')
+    }
+  }
+
+  private async initializeTempDir(): Promise<void> {
+    try {
+      await fs.mkdir(this.tempDir, { recursive: true })
+    } catch (error) {
+      logger.warn({ error }, 'Failed to create temp directory')
     }
   }
 
@@ -105,8 +117,8 @@ export class AIImageService {
 
     try {
       switch (provider) {
-        case 'openai':
-          result = await this.generateWithOpenAI(options)
+        case 'fal':
+          result = await this.generateWithFal(options)
           break
         case 'replicate':
           result = await this.generateWithReplicate(options)
@@ -128,45 +140,88 @@ export class AIImageService {
   }
 
   /**
-   * Generowanie obrazu przez OpenAI DALL-E 3
+   * Generowanie obrazu przez fal.ai GPT Image-1
    */
-  private async generateWithOpenAI(options: AIImageOptions): Promise<AIImageResult> {
-    if (!this.openai) {
-      throw new Error('OpenAI not initialized')
+  private async generateWithFal(options: AIImageOptions): Promise<AIImageResult> {
+    if (!this.falInitialized) {
+      fal.config({
+        credentials: process.env.FAL_AI_API_KEY
+      })
+      this.falInitialized = true
     }
 
-    logger.info('Generating image with OpenAI DALL-E 3')
+    logger.info('Generating image with fal.ai Ideogram v3...')
+    
+    // Map our sizes to Ideogram v3 format
+    const sizeMapping: Record<string, string> = {
+      '1024x1024': 'square_hd',
+      '1024x1792': 'portrait_16_9', 
+      '1792x1024': 'landscape_16_9'
+    }
+    
+    const imageSize = sizeMapping[options.size || '1024x1024'] || 'square_hd'
+    
+    // Map our style to Ideogram v3 style
+    const styleMapping: Record<string, string> = {
+      'vivid': 'DESIGN',
+      'natural': 'REALISTIC'
+    }
+    
+    const style = styleMapping[options.style || 'natural'] || 'AUTO'
+    
+    // Map our quality to rendering speed
+    const renderingSpeed = options.quality === 'hd' ? 'QUALITY' : 'BALANCED'
 
-    try {
-      const response = await this.openai.images.generate({
-        model: "dall-e-3",
+    const result = await fal.subscribe('fal-ai/ideogram/v3', {
+      input: {
         prompt: options.prompt,
-        n: 1,
-        size: options.size || "1024x1024",
-        quality: options.quality || "standard",
-        style: options.style || "vivid",
-        response_format: "url"
-      })
-
-      const imageUrl = response.data?.[0]?.url
-      if (!imageUrl) {
-        throw new Error('No image URL received from OpenAI')
-      }
-
-      // Pobierz obraz i zapisz lokalnie
-      const imagePath = await this.downloadImage(imageUrl, 'openai')
-
-      return {
-        imagePath,
-        provider: 'openai',
-        metadata: {
-          revised_prompt: response.data?.[0]?.revised_prompt
+        image_size: imageSize,
+        num_images: 1,
+        rendering_speed: renderingSpeed,
+        style: style,
+        expand_prompt: true,
+        sync_mode: true // Wait for the image to be ready
+      },
+      logs: true,
+      onQueueUpdate: (update) => {
+        if (update.status === "IN_PROGRESS") {
+          update.logs?.map((log) => log.message).forEach((msg) => {
+            logger.info(`Ideogram v3: ${msg}`)
+          })
         }
-      }
+      },
+    })
 
-    } catch (error) {
-      logger.error({ error }, 'OpenAI image generation failed')
-      throw new Error(`OpenAI generation failed: ${error}`)
+    logger.info('Ideogram v3 generation completed')
+    
+    // Download the generated image
+    const images = result.data.images
+    if (!images || images.length === 0) {
+      throw new Error('No images generated by Ideogram v3')
+    }
+
+    const imageUrl = images[0].url
+    const response = await axios.get(imageUrl, { responseType: 'arraybuffer' })
+    
+    // Save to our temp directory
+    const filename = `ideogram_${Date.now()}_${Math.random().toString(36).substring(7)}.png`
+    const imagePath = path.join(this.tempDir, filename)
+    
+    await fs.writeFile(imagePath, response.data)
+    
+    logger.info(`Ideogram v3 image saved: ${imagePath}`)
+    
+    return {
+      imagePath,
+      provider: 'fal-ideogram',
+      cost: 0.02, // Estimated cost for Ideogram v3
+      metadata: {
+        model: 'ideogram-v3',
+        seed: result.data.seed,
+        size: imageSize,
+        style: style,
+        rendering_speed: renderingSpeed
+      }
     }
   }
 
@@ -246,18 +301,18 @@ export class AIImageService {
   private selectProvider(preferredProvider?: string): string | null {
     // Jeśli podano preferowany provider i jest dostępny
     if (preferredProvider) {
-      if (preferredProvider === 'openai' && this.openai) return 'openai'
+      if (preferredProvider === 'fal' && this.falInitialized) return 'fal'
       if (preferredProvider === 'replicate' && this.replicate) return 'replicate'
     }
 
     // Domyślna kolejność preferencji
-    const preference = process.env.AI_IMAGE_PROVIDER || 'openai'
+    const preference = process.env.AI_IMAGE_PROVIDER || 'fal'
     
-    if (preference === 'openai' && this.openai) return 'openai'
+    if (preference === 'fal' && this.falInitialized) return 'fal'
     if (preference === 'replicate' && this.replicate) return 'replicate'
     
     // Fallback do pierwszego dostępnego
-    if (this.openai) return 'openai'
+    if (this.falInitialized) return 'fal'
     if (this.replicate) return 'replicate'
     
     return null
@@ -354,7 +409,7 @@ export class AIImageService {
    * Sprawdza czy AI jest dostępne
    */
   isAvailable(): boolean {
-    return !!(this.openai || this.replicate)
+    return !!(this.falInitialized || this.replicate)
   }
 
   /**
@@ -362,7 +417,7 @@ export class AIImageService {
    */
   getAvailableProviders(): string[] {
     const providers: string[] = []
-    if (this.openai) providers.push('openai')
+    if (this.falInitialized) providers.push('fal')
     if (this.replicate) providers.push('replicate')
     return providers
   }

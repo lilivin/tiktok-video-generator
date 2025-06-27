@@ -50,61 +50,58 @@ async function testPromptGeneration() {
   logger.info('=== Testing Prompt Generation ===')
   
   const promptService = new PromptGeneratorService()
+  const aiImageService = new AIImageService()
   
-  for (const [index, question] of testQuestions.entries()) {
-    logger.info(`\n--- Question ${index + 1} ---`)
-    logger.info(`Question: "${question.question}"`)
-    
-    const context = promptService.analyzeQuestion(question.question)
-    logger.info(`Category: ${context.category}`)
-    logger.info(`Style: ${context.style}`) 
-    logger.info(`Keywords: ${context.keywords.join(', ')}`)
-    
-    const prompt = promptService.generatePrompt(context, question.question)
-    logger.info(`Generated Prompt: "${prompt}"`)
-  }
-}
-
-async function testAIImageGeneration() {
-  logger.info('\n=== Testing AI Image Generation ===')
+  const questions = [
+    'Jaki film wyreżyserował Spielberg w 1993 roku?',
+    'Który aktor zagrał główną rolę w filmie "Gladiator"?',
+    'W którym roku powstał pierwszy film "Star Wars"?',
+    'Kto napisał scenariusz do filmu "Pulp Fiction"?',
+    'Jaki jest najlepszy film Hitchcocka?'
+  ]
   
-  const aiService = new AIImageService()
-  
-  if (!aiService.isAvailable()) {
-    logger.warn('No AI providers available. Please check your API keys.')
-    logger.info('Available providers:', aiService.getAvailableProviders())
-    return
-  }
-  
-  logger.info('Available AI providers:', aiService.getAvailableProviders())
-  
-  // Test with one question
-  const testQuestion = testQuestions[0] // Geography question
-  const promptService = new PromptGeneratorService()
-  
-  try {
-    const context = promptService.analyzeQuestion(testQuestion.question)
-    const prompt = promptService.generatePrompt(context, testQuestion.question)
+  for (const [index, question] of questions.entries()) {
+    logger.info(`\n=== Testing Question ${index + 1} ===`)
+    logger.info(`Question: ${question}`)
     
-    logger.info(`Generating image for: "${testQuestion.question}"`)
-    logger.info(`Using prompt: "${prompt.substring(0, 100)}..."`)
+    // Test analizy pytania
+    const context = promptService.analyzeQuestion(question)
+    logger.info(`Topic: ${context.topic}`)
+    logger.info(`Locale: ${context.locale}`)
     
-    const result = await aiService.generateImage({
-      prompt,
-      size: '1024x1792',
-      quality: 'standard'
-    })
+    // Test generowania promptu
+    const prompt = promptService.generatePrompt(context, question)
+    logger.info(`Generated prompt: ${prompt}`)
     
-    logger.info(`✅ Image generated successfully!`)
-    logger.info(`Provider: ${result.provider}`)
-    logger.info(`Image path: ${result.imagePath}`)
-    
-    if (result.metadata?.revised_prompt) {
-      logger.info(`Revised prompt: "${result.metadata.revised_prompt}"`)
+    // Test generowania obrazu AI (jeśli dostępne)
+    if (aiImageService.isAvailable()) {
+      try {
+        logger.info('Generating AI background...')
+        
+        const result = await aiImageService.generateImage({
+          prompt,
+          size: '1024x1792',
+          quality: 'standard',
+          style: 'natural'
+        })
+        
+        logger.info(`✅ AI background generated: ${result.imagePath}`)
+        logger.info(`Provider: ${result.provider}`)
+        
+        // Sprawdź czy plik został utworzony
+        const fs = await import('fs')
+        if (fs.existsSync(result.imagePath)) {
+          logger.info(`✅ File exists: ${result.imagePath}`)
+        } else {
+          logger.error(`❌ File not found: ${result.imagePath}`)
+        }
+        
+      } catch (error) {
+        logger.error({ error }, `❌ AI generation failed for question ${index + 1}`)
+      }
+    } else {
+      logger.warn('❌ AI image service not available')
     }
-    
-  } catch (error) {
-    logger.error(`❌ Image generation failed:`, error)
   }
 }
 
@@ -134,10 +131,7 @@ async function main() {
     // Test 1: Prompt Generation (always works)
     await testPromptGeneration()
     
-    // Test 2: AI Image Generation (requires API keys)
-    await testAIImageGeneration()
-    
-    // Test 3: Full Video Service Integration
+    // Test 2: Full Video Service Integration
     await testVideoRenderService()
     
     logger.info('\n✅ All tests completed!')
@@ -192,4 +186,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch(console.error)
 }
 
-export { testPromptGeneration, testAIImageGeneration, testVideoRenderService } 
+export { testPromptGeneration, testVideoRenderService } 
